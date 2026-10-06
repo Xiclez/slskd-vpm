@@ -193,6 +193,13 @@ def parse_line(raw: str):
             queries.append(q_artist + q_title + q_remixer)
             queries.append(q_title + q_remixer)
         queries.append(q_artist + q_title)
+        # el archivo puede estar a nombre de otro de los artistas
+        # ("NEW CITY, LA CASA, Alexei Morita" → probar también "Alexei Morita", "LA CASA")
+        if q_title:
+            for other in artists[1:3]:
+                qo = query_tokens(other)
+                if qo:
+                    queries.append(qo + q_title)
         if len(q_title) >= 2 and not q_remixer:
             queries.append(q_title + (["extended"] if hint == "extended" else []))
     else:
