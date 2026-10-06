@@ -1,0 +1,40 @@
+# Descargador aislado: su propio slskd + el script vpm.
+# No toca tu otra instancia de slskd, ni Navidrome, ni rclone.
+#
+# Puertos distintos a los de tu slskd principal (5030 / 50300) para que no choquen.
+# Se configuran en .env (lo crea setup.sh).
+
+name: vpm-downloader
+
+services:
+  slskd:
+    image: slskd/slskd:latest
+    container_name: vpm-slskd
+    restart: unless-stopped
+    user: "${PUID}:${PGID}"
+    environment:
+      - SLSKD_REMOTE_CONFIGURATION=false
+    ports:
+      - "${WEB_PORT}:5030"                        # interfaz web
+      - "${SLSK_PORT}:${SLSK_PORT}/tcp"           # puerto de escucha de Soulseek
+    volumes:
+      - ./slskd:/app                              # slskd.yml + base de datos interna
+      - ./descargas:/downloads
+      - ./incompletas:/incomplete
+
+  vpm:
+    build: ./vpm
+    image: vpm-fetch:latest
+    container_name: vpm-fetch
+    profiles: ["tools"]                           # no arranca con "up", se usa con "run"
+    user: "${PUID}:${PGID}"
+    depends_on:
+      - slskd
+    environment:
+      - SLSKD_URL=http://slskd:5030
+      - SLSKD_API_KEY=${API_KEY}
+    volumes:
+      - ./listas:/data/listas
+      - ./trabajo:/data/trabajo
+      - ./entrega:/data/entrega
+      - ./descargas:/descargas:ro

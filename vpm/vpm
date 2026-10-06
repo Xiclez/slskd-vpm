@@ -1,0 +1,101 @@
+#!/bin/sh
+# vpm — orquesta normalize / slskd_fetch / collect para una lista.
+# Se ejecuta dentro del contenedor:  docker compose run --rm vpm <comando> <lista> [opciones]
+set -e
+
+APP=/app
+LISTAS=/data/listas
+TRABAJO=/data/trabajo
+ENTREGA=/data/entrega
+DESCARGAS=/descargas
+
+uso() {
+  cat <<'EOF'
+Uso:  docker compose run --rm vpm <comando> <lista> [opciones extra]
+
+  <lista> es el nombre del .txt dentro de ./listas (con o sin ".txt")
+
+Comandos:
+  preparar   <lista>        limpia la lista y muestra qué se va a buscar
+  probar     <lista> [N]    simula N búsquedas (10 por defecto) sin descargar nada
+  descargar  <lista>        busca todo, encola en slskd y vigila hasta terminar
+  estado     <lista>        revisa descargas, reintenta fallidas, genera faltantes
+  entregar   <lista>        copia lo descargado a ./entrega/<lista> + informe
+  reintentar <lista>        vuelve a buscar las no encontradas / fallidas
+  todo       <lista>        preparar + descargar + entregar
+  listas                    muestra las listas disponibles y su avance
+
+Opciones extra (se pasan al buscador), por ejemplo:
+  --include-ambiguous   --min-score 30   --delay 5
+EOF
+}
+
+nombre() { basename "$1" .txt; }
+
+ws() {  # carpeta de trabajo de la lista
+  _ws=$(nombre "$1")
+  mkdir -p "$TRABAJO/$_ws"
+  cd "$TRABAJO/$_ws"
+}
+
+need_tracks() {
+  if [ ! -f tracks.json ]; then
+    echo "Primero ejecuta:  docker compose run --rm vpm preparar $(nombre "$1")"
+    exit 1
+  fi
+}
+
+preparar() {
+  src="$LISTAS/$(nombre "$1").txt"
+  [ -f "$src" ] || { echo "No existe $src  (copia tu .txt a ./listas)"; exit 1; }
+  ws "$1"
+  python3 $APP/normalize.py "$src" -o tracks.json --csv revision.csv
+  echo "Revisión detallada: ./trabajo/$(nombre "$1")/revision.csv"
+}
+
+cmd="$1"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  preparar)   [ -n "$1" ] || { uso; exit 1; }; preparar "$1" ;;
+  probar)     [ -n "$1" ] || { uso; exit 1; }
+              l="$1"; shift; cuantas=10
+              case "$1" in ''|-*) ;; *) cuantas="$1"; shift ;; esac
+              ws "$l"; need_tracks "$l"
+              python3 $APP/slskd_fetch.py search --dry-run --limit "$cuantas" "$@"
+              python3 $APP/slskd_fetch.py reset >/dev/null
+              echo "(simulación: no se descargó nada)" ;;
+  descargar)  [ -n "$1" ] || { uso; exit 1; }; l="$1"; shift
+              ws "$l"; need_tracks "$l"
+              python3 $APP/slskd_fetch.py run "$@" ;;
+  estado)     [ -n "$1" ] || { uso; exit 1; }; l="$1"; shift
+              ws "$l"; need_tracks "$l"
+              python3 $APP/slskd_fetch.py sync "$@"
+              python3 $APP/slskd_fetch.py report ;;
+  entregar)   [ -n "$1" ] || { uso; exit 1; }; l="$1"; shift
+              ws "$l"; need_tracks "$l"
+              python3 $APP/slskd_fetch.py report >/dev/null
+              python3 $APP/collect.py --downloads "$DESCARGAS" --out "$ENTREGA/$(nombre "$l")" "$@" ;;
+  reintentar) [ -n "$1" ] || { uso; exit 1; }; l="$1"; shift
+              ws "$l"; need_tracks "$l"
+              python3 $APP/slskd_fetch.py reset
+              python3 $APP/slskd_fetch.py run "$@" ;;
+  todo)       [ -n "$1" ] || { uso; exit 1; }; l="$1"; shift
+              preparar "$l"
+              python3 $APP/slskd_fetch.py run "$@"
+              python3 $APP/collect.py --downloads "$DESCARGAS" --out "$ENTREGA/$(nombre "$l")" ;;
+  listas)     for f in "$LISTAS"/*.txt; do
+                [ -f "$f" ] || { echo "No hay listas en ./listas"; break; }
+                ln_=$(basename "$f" .txt)
+                if [ -f "$TRABAJO/$ln_/state.json" ]; then
+                  python3 - "$TRABAJO/$ln_/state.json" "$ln_" <<'PY'
+import json, sys, collections
+s = json.load(open(sys.argv[1]))
+c = collections.Counter(e["status"] for e in s.values())
+print(f"{sys.argv[2]}: {len(s)} canciones — " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())))
+PY
+                else
+                  echo "$ln_: sin procesar"
+                fi
+              done ;;
+  ""|-h|--help|ayuda) uso ;;
+  *)          echo "Comando desconocido: $cmd"; echo; uso; exit 1 ;;
+esac

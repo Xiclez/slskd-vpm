@@ -1,0 +1,31 @@
+# Generado por setup.sh — puedes editarlo a mano y luego: docker compose restart slskd
+remote_configuration: false
+
+directories:
+  downloads: /downloads
+  incomplete: /incomplete
+
+# Compartir lo descargado es la norma en Soulseek: muchos usuarios bloquean a
+# quien no comparte nada, así que esto mejora la tasa de éxito.
+# Si no quieres compartir, borra este bloque "shares".
+shares:
+  directories:
+    - /downloads
+
+soulseek:
+  username: __SLSK_USER__
+  password: __SLSK_PASS__
+  listen_port: __SLSK_PORT__
+  description: vpm downloader
+
+web:
+  port: 5030
+  authentication:
+    disabled: false
+    username: __WEB_USER__
+    password: __WEB_PASS__
+    api_keys:
+      vpm:
+        key: __API_KEY__
+        role: readwrite
+        cidr: 0.0.0.0/0,::/0
