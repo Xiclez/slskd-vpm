@@ -33,6 +33,7 @@ except ImportError:
 
 STATE_FILE = "state.json"
 MAX_CANDIDATES = 6
+MAX_FLAC = 4
 FAIL_STATES = ("Errored", "Rejected", "TimedOut", "Cancelled", "Failed", "Aborted")
 
 
@@ -148,19 +149,23 @@ def score_file(track, resp, f, opts):
     path = f.get("filename", "")
     base = re.split(r"[\\/]", path)[-1]
     ext = (f.get("extension") or base.rsplit(".", 1)[-1]).lower().lstrip(".")
-    if ext != "mp3":
-        return None, "no mp3"
-    if f.get("isVariableBitRate"):
-        return None, "vbr"
-    br = effective_bitrate(f)
-    if br is None or br < opts.min_bitrate - 4:
-        return None, f"bitrate {br}"
+    if ext == "flac":
+        if not opts.flac:
+            return None, "flac desactivado"
+    elif ext != "mp3":
+        return None, "formato no aceptado"
+    else:
+        if f.get("isVariableBitRate"):
+            return None, "vbr"
+        br = effective_bitrate(f)
+        if br is None or br < opts.min_bitrate - 4:
+            return None, f"bitrate {br}"
 
     length = f.get("length")
     if length and length < 100:
         return None, "preview/corto"
 
-    fb = fold(re.sub(r"\.mp3$", "", base, flags=re.I))
+    fb = fold(re.sub(r"\.(mp3|flac)$", "", base, flags=re.I))
     fp = fold(path)
 
     # título: todas las palabras significativas deben estar en el nombre del archivo
@@ -169,6 +174,14 @@ def score_file(track, resp, f, opts):
     if len(missing) > (1 if len(tw) >= 4 else 0):
         return None, f"título no coincide ({missing})"
     score = 50 - 10 * len(missing)
+
+    # el título debe aparecer como frase seguida, no con las palabras sueltas
+    # ("Beat On Time" ≠ "axis_of_time-jump_on_the_beat")
+    sq = lambda x: re.sub(r"[^a-z0-9]", "", fold(x))
+    if sq(track["title"]) and sq(track["title"]) not in sq(fb):
+        if not track["artists"]:
+            return None, "título no aparece como frase"
+        score -= 30
 
     pw = track.get("partial_word")
     if pw and re.search(rf"(?:^| ){re.escape(fold(pw))}", fb):
@@ -228,13 +241,39 @@ def score_file(track, resp, f, opts):
     return score, "ok"
 
 
-def rank(track, responses, opts):
+def reason_key(why):
+    if why.startswith("bitrate"):
+        return f"bitrate menor a {MIN_BR[0]} kbps"
+    return {"formato no aceptado": "formato no aceptado (M4A, WAV, OGG…)",
+            "flac desactivado": "FLAC (desactivado con --no-flac)", "vbr": "MP3 VBR (no 320 fijo)",
+            "preview/corto": "preview de menos de 100 s"}.get(why, why.split(" (")[0])
+
+
+MIN_BR = [320]
+
+
+def rank(track, responses, opts, explain=None):
+    MIN_BR[0] = opts.min_bitrate
     cands = []
     for resp in responses:
         for f in resp.get("files", []) or []:
             sc, why = score_file(track, resp, f, opts)
+            if explain is not None:
+                if sc is None:
+                    explain["reasons"][reason_key(why)] += 1
+                    # guardar ejemplos relevantes: que al menos contengan el título
+                    base = re.split(r"[\\/]", f.get("filename", ""))[-1]
+                    tw = [w for w in words(track["title"]) if w not in STOP]
+                    if tw and all(has_phrase(fold(base), w) for w in tw) and len(explain["samples"]) < 8:
+                        br = effective_bitrate(f)
+                        explain["samples"].append(f"{base}  [{int(br) if br else '?'} kbps] → {why}")
+                elif sc < opts.min_score:
+                    explain["reasons"][f"puntaje menor a {opts.min_score}"] += 1
             if sc is not None and sc >= opts.min_score:
+                fname = f.get("filename") or ""
                 cands.append({
+                    "format": "flac" if fname.lower().endswith(".flac") or
+                              (f.get("extension") or "").lower().lstrip(".") == "flac" else "mp3",
                     "score": round(sc, 1),
                     "username": resp.get("username"),
                     "filename": f.get("filename"),
@@ -243,15 +282,20 @@ def rank(track, responses, opts):
                     "length": f.get("length"),
                 })
     cands.sort(key=lambda c: c["score"], reverse=True)
-    # una sola opción por usuario para tener alternativas reales si alguien falla
-    seen, out = set(), []
-    for c in cands:
-        if c["username"] not in seen:
-            seen.add(c["username"])
-            out.append(c)
-        if len(out) >= MAX_CANDIDATES:
-            break
-    return out
+
+    def top(items, n):
+        # una sola opción por usuario para tener alternativas reales si alguien falla
+        seen, out = set(), []
+        for c in items:
+            if c["username"] not in seen:
+                seen.add(c["username"])
+                out.append(c)
+            if len(out) >= n:
+                break
+        return out
+
+    return (top([c for c in cands if c["format"] == "mp3"], MAX_CANDIDATES),
+            top([c for c in cands if c["format"] == "flac"], MAX_FLAC))
 
 
 # ───────────────────────── estado ─────────────────────────
@@ -314,6 +358,9 @@ def cmd_search(cli, state, opts):
         for e in skipped:
             e["status"] = "skipped_ambiguous"
         todo = [e for e in todo if not e["track"]["ambiguous"]]
+    if opts.only:
+        todo = [e for e in state.values() if e["track"]["index"] in set(opts.only)
+                and e["status"] in ("pending", "skipped_ambiguous", "not_found", "dry_run")]
     if opts.limit:
         todo = todo[: opts.limit]
     print(f"Buscando {len(todo)} canciones…\n")
@@ -321,7 +368,7 @@ def cmd_search(cli, state, opts):
     for i, e in enumerate(todo, 1):
         t = e["track"]
         print(f"[{i}/{len(todo)}] {label(t)}")
-        cands = []
+        cands, flacs = [], []
         for q in t["queries"]:
             try:
                 responses = cli.search(q, opts.search_timeout * 1000)
@@ -329,21 +376,41 @@ def cmd_search(cli, state, opts):
                 print(f"    ! error en búsqueda '{q}': {ex}")
                 time.sleep(opts.delay)
                 continue
+            from collections import Counter
             nfiles = sum(len(r.get("files") or []) for r in responses)
-            cands = rank(t, responses, opts)
-            print(f"    q='{q}'  →  {len(responses)} usuarios, {nfiles} archivos, {len(cands)} válidos")
+            ex = {"reasons": Counter(), "samples": []}
+            cands, fl = rank(t, responses, opts, ex)
+            seen_f = {(c["username"], c["filename"]) for c in flacs}
+            flacs = sorted(flacs + [c for c in fl if (c["username"], c["filename"]) not in seen_f],
+                           key=lambda c: c["score"], reverse=True)[:MAX_FLAC]
+            extra = f" (+{len(fl)} FLAC)" if fl and not cands else ""
+            print(f"    q='{q}'  →  {len(responses)} usuarios, {nfiles} archivos, "
+                  f"{len(cands)} candidatos MP3 320{extra}")
+            if (not cands and not fl and nfiles) or opts.explain:
+                top = ", ".join(f"{k}: {v}" for k, v in ex["reasons"].most_common(4))
+                if top:
+                    print(f"      descartados → {top}")
+                for smp in ex["samples"][: (8 if opts.explain else 3)]:
+                    print(f"        · {smp}")
+            if opts.explain and (cands or fl):
+                for c in cands + fl:
+                    name = re.split(r"[\\/]", c["filename"])[-1]
+                    print(f"        ✓ {c['score']:>6}  {name}  [{c['username']}]")
             time.sleep(opts.delay)
             if cands:
                 break
-        e["candidates"] = cands
+        # FLAC al final de la cola: se usa si no hubo MP3, o si fallan todos los MP3
+        e["candidates"] = cands + flacs
+        cands = e["candidates"]
         e["searched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         if cands:
             enqueue_next(cli, e, opts.dry_run)
             c = e["current"]
             if c:
                 name = re.split(r"[\\/]", c["filename"])[-1]
+                q_txt = "FLAC" if c.get("format") == "flac" else f"{int(c['bitrate'] or 0)} kbps"
                 print(f"    ✓ {'(simulado) ' if opts.dry_run else ''}{name}  "
-                      f"[{c['username']}, {int(c['bitrate'] or 0)} kbps, score {c['score']}]")
+                      f"[{c['username']}, {q_txt}, score {c['score']}]")
         else:
             e["status"] = "not_found"
             print("    ✗ sin resultados válidos")
@@ -387,8 +454,10 @@ def cmd_sync(cli, state, opts, quiet=False):
         else:
             in_flight += 1
     save_state(state)
-    if not quiet:
-        print(f"\nEn curso: {in_flight}   cambios: {changed}")
+    if not quiet and (changed or not getattr(opts, "_watching", False)
+                      or time.time() - getattr(opts, "_last_beat", 0) > 600):
+        opts._last_beat = time.time()
+        print(f"[{time.strftime('%H:%M')}] En curso: {in_flight}   cambios: {changed}")
     return in_flight
 
 
@@ -397,6 +466,7 @@ def cmd_run(cli, state, opts):
     if opts.dry_run:
         return
     print("\nVigilando descargas (Ctrl+C para salir; se puede retomar con 'sync')…")
+    opts._watching = True
     while True:
         n = cmd_sync(cli, state, opts, quiet=False)
         if n == 0:
@@ -408,14 +478,18 @@ def cmd_run(cli, state, opts):
 def cmd_report(state, opts):
     from collections import Counter
     c = Counter(e["status"] for e in state.values())
+    nflac = sum(1 for e in state.values()
+                if e["status"] in ("downloaded", "queued") and (e.get("current") or {}).get("format") == "flac")
     print("\nResumen:")
     for k in ("downloaded", "queued", "dry_run", "pending", "not_found", "failed", "skipped_ambiguous"):
         if c.get(k):
             print(f"  {k:18} {c[k]}")
+    if nflac:
+        print(f"  (de esas, en FLAC: {nflac})")
     missing = [e for e in state.values() if e["status"] in ("not_found", "failed", "skipped_ambiguous")]
     missing.sort(key=lambda e: e["track"]["index"])
     with open(opts.report_file, "w", encoding="utf-8") as fh:
-        fh.write(f"NO ENCONTRADAS EN 320 kbps — {time.strftime('%Y-%m-%d %H:%M')}\n")
+        fh.write(f"NO ENCONTRADAS (ni MP3 320 ni FLAC) — {time.strftime('%Y-%m-%d %H:%M')}\n")
         fh.write(f"PENDIENTES: {len(missing)}\n\n")
         for i, e in enumerate(missing, 1):
             t = e["track"]
@@ -441,9 +515,13 @@ def main():
     ap.add_argument("command", choices=["search", "sync", "run", "report", "reset"])
     ap.add_argument("--tracks", default="tracks.json")
     ap.add_argument("--dry-run", action="store_true", help="buscar y elegir, pero no encolar nada")
+    ap.add_argument("--explain", action="store_true", help="mostrar motivos de descarte y todos los candidatos")
+    ap.add_argument("--only", type=int, nargs="+", help="procesar solo estos números de la lista original")
     ap.add_argument("--limit", type=int, help="procesar solo N canciones (para probar)")
     ap.add_argument("--include-ambiguous", action="store_true", help="buscar también las sin artista/título corto")
     ap.add_argument("--min-bitrate", type=int, default=320)
+    ap.add_argument("--no-flac", dest="flac", action="store_false",
+                    help="no aceptar FLAC como respaldo cuando no hay MP3 320")
     ap.add_argument("--min-score", type=float, default=20)
     ap.add_argument("--search-timeout", type=int, default=15, help="segundos por búsqueda en slskd")
     ap.add_argument("--delay", type=float, default=3, help="pausa entre búsquedas (no saturar la red)")

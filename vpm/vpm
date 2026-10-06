@@ -18,6 +18,7 @@ Uso:  docker compose run --rm vpm <comando> <lista> [opciones extra]
 Comandos:
   preparar   <lista>        limpia la lista y muestra qué se va a buscar
   probar     <lista> [N]    simula N búsquedas (10 por defecto) sin descargar nada
+  explicar   <lista> <#>... muestra por qué se aceptan/descartan resultados de esas canciones
   descargar  <lista>        busca todo, encola en slskd y vigila hasta terminar
   estado     <lista>        revisa descargas, reintenta fallidas, genera faltantes
   entregar   <lista>        copia lo descargado a ./entrega/<lista> + informe
@@ -63,6 +64,13 @@ case "$cmd" in
               python3 $APP/slskd_fetch.py search --dry-run --limit "$cuantas" "$@"
               python3 $APP/slskd_fetch.py reset >/dev/null
               echo "(simulación: no se descargó nada)" ;;
+  explicar)   [ -n "$2" ] || { echo "Uso: vpm explicar <lista> <número> [número…]"; exit 1; }
+              l="$1"; shift
+              ws "$l"; need_tracks "$l"
+              cp state.json .state.bak 2>/dev/null || true
+              python3 $APP/slskd_fetch.py search --dry-run --explain --include-ambiguous --only "$@"
+              if [ -f .state.bak ]; then mv .state.bak state.json; else rm -f state.json; fi
+              echo "(solo diagnóstico: no se descargó ni se cambió nada)" ;;
   descargar)  [ -n "$1" ] || { uso; exit 1; }; l="$1"; shift
               ws "$l"; need_tracks "$l"
               python3 $APP/slskd_fetch.py run "$@" ;;

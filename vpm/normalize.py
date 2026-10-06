@@ -100,7 +100,7 @@ def parse_line(raw: str):
         return None
     idx, text, kbps = m.group(1), m.group(2), m.group(3)
     original = text
-    truncated = len(text) == TRUNC_LEN
+    truncated = len(text) == TRUNC_LEN and not text.rstrip().endswith((")", "]"))
 
     t = fix_mojibake(unicodedata.normalize("NFC", text))
     t = YT_ID_RE.sub(" ", t)
@@ -181,6 +181,10 @@ def parse_line(raw: str):
     q_partial = query_tokens(partial) if len(partial) >= 3 else []
     q_artist = query_tokens(artists[0]) if artists else []
     q_remixer = query_tokens(remixer)[:2] if remixer else []
+    if not q_title and artists:
+        # título no buscable ("1,2,3"): reforzamos con el 2º artista y la versión
+        extra = [w for a in artists[1:2] for w in query_tokens(a)]
+        q_artist = q_artist + extra + (["extended"] if hint == "extended" else [])
     queries = []
     if q_partial:  # primero probamos asumiendo que la palabra está completa
         queries.append((q_artist[:2] if q_artist else []) + q_title + q_partial)

@@ -17,8 +17,11 @@ import unicodedata
 
 try:
     from mutagen.mp3 import MP3
+    from mutagen.flac import FLAC
 except ImportError:
-    MP3 = None
+    MP3 = FLAC = None
+
+AUDIO_EXT = (".mp3", ".flac")
 
 
 def fold(s):
@@ -32,7 +35,7 @@ def index_downloads(root):
     exact, folded = {}, {}
     for dirpath, _, files in os.walk(root):
         for f in files:
-            if not f.lower().endswith(".mp3"):
+            if not f.lower().endswith(AUDIO_EXT):
                 continue
             p = os.path.join(dirpath, f)
             exact.setdefault(f, []).append(p)
@@ -71,7 +74,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     exact, folded = index_downloads(args.downloads)
 
-    rows, copied, low, missing = [], 0, 0, 0
+    rows, copied, low, missing, nflac = [], 0, 0, 0, 0
     for e in sorted(state.values(), key=lambda x: x["track"]["index"]):
         t = e["track"]
         if e["status"] != "downloaded" or not e.get("current"):
@@ -80,7 +83,7 @@ def main():
         src = find_local(c["filename"], exact, folded)
         if not src:
             missing += 1
-            rows.append([t["index"], t["original"], "", "", "", c["username"], "NO ENCONTRADO EN DISCO"])
+            rows.append([t["index"], t["original"], "", "", "", "", c["username"], "NO ENCONTRADO EN DISCO"])
             continue
 
         name = safe_name(os.path.basename(src))
@@ -97,25 +100,36 @@ def main():
             shutil.copy2(src, dst)
             copied += 1
 
-        kbps, dur, note = "", "", "ok"
+        fmt, kbps, dur, note = "", "", "", "ok"
+        is_flac = dst.lower().endswith(".flac")
         if MP3:
             try:
-                info = MP3(dst).info
-                kbps = round(info.bitrate / 1000)
+                if is_flac:
+                    nflac += 1
+                    info = FLAC(dst).info
+                    fmt = f"FLAC {info.bits_per_sample}bit/{info.sample_rate / 1000:g}kHz"
+                    kbps = round(info.bitrate / 1000) if getattr(info, "bitrate", 0) else ""
+                    if info.sample_rate < 44100 or info.bits_per_sample < 16:
+                        note = "FLAC de baja resolución"
+                        low += 1
+                else:
+                    info = MP3(dst).info
+                    fmt = "MP3"
+                    kbps = round(info.bitrate / 1000)
+                    if kbps < args.min_bitrate - 4:
+                        note = f"BITRATE BAJO ({kbps} kbps)"
+                        low += 1
+                    elif getattr(info, "bitrate_mode", None) and "VBR" in str(info.bitrate_mode):
+                        note = "VBR"
                 dur = f"{int(info.length // 60)}:{int(info.length % 60):02d}"
-                if kbps < args.min_bitrate - 4:
-                    note = f"BITRATE BAJO ({kbps} kbps)"
-                    low += 1
-                elif getattr(info, "bitrate_mode", None) and "VBR" in str(info.bitrate_mode):
-                    note = "VBR"
             except Exception as ex:
                 note = f"no se pudo leer: {ex.__class__.__name__}"
-        rows.append([t["index"], t["original"], name, kbps, dur, c["username"], note])
+        rows.append([t["index"], t["original"], name, fmt, kbps, dur, c["username"], note])
 
     report = os.path.join(args.out, "_informe.csv")
     with open(report, "w", newline="", encoding="utf-8-sig") as fh:
         w = csv.writer(fh)
-        w.writerow(["#", "pedido", "archivo", "kbps", "duracion", "usuario_soulseek", "nota"])
+        w.writerow(["#", "pedido", "archivo", "formato", "kbps", "duracion", "usuario_soulseek", "nota"])
         w.writerows(rows)
 
     nf = "no_encontradas.txt"
@@ -123,8 +137,10 @@ def main():
         shutil.copy2(nf, os.path.join(args.out, "_no_encontradas.txt"))
 
     print(f"Copiadas ahora: {copied}   en la carpeta: {len([r for r in rows if r[2]])}")
+    if nflac:
+        print(f"  {nflac} en FLAC (no había MP3 320)")
     if low:
-        print(f"  ⚠ {low} con bitrate menor a {args.min_bitrate} (ver _informe.csv)")
+        print(f"  ⚠ {low} con calidad menor a la esperada (ver _informe.csv)")
     if missing:
         print(f"  ⚠ {missing} marcadas como descargadas pero no están en disco")
     print(f"→ {args.out}")

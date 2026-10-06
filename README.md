@@ -1,6 +1,7 @@
 # vpm-downloader
 
 Descargador aislado: le das una lista `.txt` de canciones y te entrega los MP3 a 320 kbps en una carpeta lista para el cliente.
+Si una canción no existe en MP3 320, usa el FLAC tal cual, sin convertir.
 Trae su propio slskd en Docker; no toca tu otra instancia de slskd, ni Navidrome, ni rclone.
 
 ```
@@ -65,15 +66,25 @@ Si se corta, vuelve a ejecutar `descargar`: el script retoma donde iba.
 
 `./entrega/<lista>/` contiene los MP3 y dos archivos de control:
 
-- `_informe.csv` (abre bien en Excel) indica, por canción, qué se pidió, el archivo entregado, el bitrate real verificado, la duración y una nota.
+- `_informe.csv` (abre bien en Excel) indica, por canción, qué se pidió, el archivo entregado, el formato (MP3 o FLAC con su resolución), el bitrate real verificado, la duración y una nota.
   La nota avisa con **BITRATE BAJO** si un usuario anunció 320 pero el archivo no lo era.
-- `_no_encontradas.txt` lista lo que no se consiguió en 320, con el motivo.
+- `_no_encontradas.txt` lista lo que no se consiguió ni en MP3 320 ni en FLAC, con el motivo.
+
+### Prioridad MP3 → FLAC
+
+1. Se prueban todas las consultas buscando MP3 a 320. En cuanto aparece uno válido, se usa ese.
+2. Solo si ninguna consulta dio un MP3 320 se usa el mejor FLAC encontrado. Se entrega tal cual, sin convertir.
+3. Los FLAC quedan en la cola como respaldo: si fallan todos los MP3 al descargar, se baja el FLAC.
+
+Para desactivar el respaldo FLAC, agrega `--no-flac`.
+Ojo: en Soulseek también hay "falsos FLAC" convertidos desde MP3. El informe muestra la resolución, pero no detecta ese caso.
 
 ### Otros comandos
 
 | Comando | Para qué |
 |---|---|
 | `vpm listas` | ver todas las listas y su avance |
+| `vpm explicar <lista> 1 2 7` | diagnóstico de esas canciones (números de la lista original): por qué se descartó cada resultado y qué candidatos hubo |
 | `vpm estado <lista>` | revisar descargas, reintentar las fallidas con otro usuario y actualizar faltantes |
 | `vpm reintentar <lista>` | volver a buscar las no encontradas (útil días después: la red cambia) |
 
@@ -81,6 +92,8 @@ Al buscador se le pueden pasar opciones extra, por ejemplo `docker compose run -
 
 | Opción | Por defecto | Para qué |
 |---|---|---|
+| `--no-flac` | (FLAC activado) | no usar FLAC como respaldo |
+| `--explain` | no | mostrar motivos de descarte y candidatos de cada búsqueda |
 | `--include-ambiguous` | no | buscar también títulos sin artista y muy cortos ("Action") |
 | `--min-score` | 20 | súbelo si ves elecciones dudosas, bájalo si encuentra poco |
 | `--delay` | 3 | pausa entre búsquedas, para no saturar la red |
