@@ -500,6 +500,51 @@ def cmd_report(state, opts):
     print(f"\n→ {opts.report_file} ({len(missing)} canciones)")
 
 
+GROUPS = {
+    "descargadas": ("downloaded",),
+    "en_curso":    ("queued",),
+    "sin_buscar":  ("pending", "dry_run"),
+    "faltantes":   ("not_found", "failed", "skipped_ambiguous"),
+}
+GROUP_TITLES = {
+    "descargadas": "DESCARGADAS",
+    "en_curso":    "EN CURSO (en cola o bajando en slskd)",
+    "sin_buscar":  "SIN BUSCAR TODAVÍA",
+    "faltantes":   "FALTANTES (no encontradas / fallidas / ambiguas)",
+}
+
+
+def cmd_list(state, opts):
+    """Lista canción por canción, agrupada por estado. Solo lee state.json."""
+    want = opts.filter or "todo"
+    if want not in GROUPS and want != "todo":
+        sys.exit(f"Filtro desconocido '{want}'. Usa: todo, " + ", ".join(GROUPS))
+    entries = sorted(state.values(), key=lambda e: e["track"]["index"])
+    counts = {g: sum(e["status"] in st for e in entries) for g, st in GROUPS.items()}
+    print("  ".join(f"{g}: {n}" for g, n in counts.items()) + f"   (total {len(entries)})")
+    why = {"not_found": "no encontrada", "failed": "fallaron todos los candidatos",
+           "skipped_ambiguous": "ambigua (revisar a mano)"}
+    for g, sts in GROUPS.items():
+        if want not in ("todo", g):
+            continue
+        rows = [e for e in entries if e["status"] in sts]
+        if not rows:
+            continue
+        print(f"\n── {GROUP_TITLES[g]}: {len(rows)} ──")
+        for e in rows:
+            t, c = e["track"], e.get("current") or {}
+            line = f"{t['index']:>4}. {label(t)}"
+            if g in ("descargadas", "en_curso") and c:
+                fmt = "FLAC" if c.get("format") == "flac" else f"MP3 {int(c.get('bitrate') or 0)}"
+                name = re.split(r"[\\/]", c.get("filename", ""))[-1]
+                line += f"\n        [{fmt}] {name}"
+                if g == "en_curso":
+                    line += f"  (usuario {c.get('username')}, intento {len(e.get('tried', []))})"
+            elif g == "faltantes":
+                line += f"   → {why.get(e['status'], e['status'])}"
+            print(line)
+
+
 def cmd_reset(state, opts):
     n = 0
     for e in state.values():
@@ -512,7 +557,8 @@ def cmd_reset(state, opts):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["search", "sync", "run", "report", "reset"])
+    ap.add_argument("command", choices=["search", "sync", "run", "report", "reset", "list"])
+    ap.add_argument("filter", nargs="?", help="para 'list': todo | descargadas | en_curso | sin_buscar | faltantes")
     ap.add_argument("--tracks", default="tracks.json")
     ap.add_argument("--dry-run", action="store_true", help="buscar y elegir, pero no encolar nada")
     ap.add_argument("--explain", action="store_true", help="mostrar motivos de descarte y todos los candidatos")
@@ -534,6 +580,8 @@ def main():
         return cmd_report(state, opts)
     if opts.command == "reset":
         return cmd_reset(state, opts)
+    if opts.command == "list":
+        return cmd_list(state, opts)
 
     url = os.environ.get("SLSKD_URL", "http://localhost:5030")
     key = os.environ.get("SLSKD_API_KEY")

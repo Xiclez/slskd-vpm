@@ -21,6 +21,8 @@ Comandos:
   explicar   <lista> <#>... muestra por qué se aceptan/descartan resultados de esas canciones
   descargar  <lista>        busca todo, encola en slskd y vigila hasta terminar
   estado     <lista>        revisa descargas, reintenta fallidas, genera faltantes
+  ver        <lista> [filtro]  lista canción por canción: todo | descargadas |
+                            en_curso | sin_buscar | faltantes
   entregar   <lista>        copia lo descargado a ./entrega/<lista> + informe
   reintentar <lista>        vuelve a buscar las no encontradas / fallidas
   todo       <lista>        preparar + descargar + entregar
@@ -78,6 +80,10 @@ case "$cmd" in
               ws "$l"; need_tracks "$l"
               python3 $APP/slskd_fetch.py sync "$@"
               python3 $APP/slskd_fetch.py report ;;
+  ver)        [ -n "$1" ] || { uso; exit 1; }; l="$1"; shift
+              ws "$l"
+              [ -f state.json ] || { echo "Esta lista aún no tiene progreso (ejecuta 'descargar')."; exit 1; }
+              python3 $APP/slskd_fetch.py list "$@" ;;
   entregar)   [ -n "$1" ] || { uso; exit 1; }; l="$1"; shift
               ws "$l"; need_tracks "$l"
               python3 $APP/slskd_fetch.py report >/dev/null

@@ -79,6 +79,29 @@ Si se corta, vuelve a ejecutar `descargar`: el script retoma donde iba.
 Para desactivar el respaldo FLAC, agrega `--no-flac`.
 Ojo: en Soulseek también hay "falsos FLAC" convertidos desde MP3. El informe muestra la resolución, pero no detecta ese caso.
 
+### Ver el avance canción por canción
+
+```bash
+docker compose run --rm vpm ver <lista>               # todo, agrupado por estado
+docker compose run --rm vpm ver <lista> descargadas   # o: en_curso | sin_buscar | faltantes
+docker compose run --rm vpm ver <lista> | less        # para listas largas
+```
+
+Se puede usar mientras la corrida sigue activa: solo lee el progreso, no interfiere.
+
+### Subir la entrega a Google Drive
+
+Usa el rclone que ya tienes en el servidor; el contenedor no toca tus credenciales.
+
+```bash
+rclone listremotes                                         # ver el nombre de tu remoto
+./subir.sh <lista> gdrive:Clientes/NombreCliente           # arma la entrega y sube
+./subir.sh <lista> gdrive:Clientes/NombreCliente --link    # + enlace para compartir
+```
+
+Es incremental: puedes ejecutarlo varias veces mientras avanza la descarga, y solo sube lo nuevo. Nunca borra nada en Drive.
+Usa una carpeta distinta a la que lee Navidrome para que esto no se mezcle con tu biblioteca.
+
 ### Otros comandos
 
 | Comando | Para qué |
