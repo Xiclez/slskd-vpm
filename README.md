@@ -92,15 +92,25 @@ Se puede usar mientras la corrida sigue activa: solo lee el progreso, no interfi
 ### Subir la entrega a Google Drive
 
 Usa el rclone que ya tienes en el servidor; el contenedor no toca tus credenciales.
+Primero mira el nombre de tu remoto con `rclone listremotes`.
+
+Lo recomendado es dejarlo subiendo solo hasta que termine la descarga:
 
 ```bash
-rclone listremotes                                         # ver el nombre de tu remoto
-./subir.sh <lista> gdrive:Clientes/NombreCliente           # arma la entrega y sube
-./subir.sh <lista> gdrive:Clientes/NombreCliente --link    # + enlace para compartir
+./subir.sh <lista> gdrive:Clientes/NombreCliente --bg --seguir --link
+tail -f logs/subir_<lista>.log      # ver el progreso (Ctrl+C solo deja de mirar)
 ```
 
-Es incremental: puedes ejecutarlo varias veces mientras avanza la descarga, y solo sube lo nuevo. Nunca borra nada en Drive.
-Usa una carpeta distinta a la que lee Navidrome para que esto no se mezcle con tu biblioteca.
+| Opción | Qué hace |
+|---|---|
+| `--bg` | corre en segundo plano y sobrevive a cerrar SSH o apagar tu compu |
+| `--seguir [min]` | cada N minutos (30 por defecto) arma la entrega y sube lo nuevo; al terminar la descarga hace una pasada final y se detiene |
+| `--link` | al final imprime un enlace de Drive para compartir |
+
+Sin opciones, hace una sola pasada en primer plano.
+Siempre deja log en `logs/subir_<lista>.log` y al final de cada pasada compara cuántos audios hay en la entrega y cuántos en Drive.
+Es incremental, nunca borra nada en Drive y no permite dos subidas simultáneas de la misma lista.
+Usa una carpeta distinta a la que lee Navidrome.
 
 ### Otros comandos
 

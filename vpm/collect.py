@@ -75,10 +75,11 @@ def main():
     exact, folded = index_downloads(args.downloads)
 
     rows, copied, low, missing, nflac = [], 0, 0, 0, 0
-    for e in sorted(state.values(), key=lambda x: x["track"]["index"]):
+    todo = [e for e in sorted(state.values(), key=lambda x: x["track"]["index"])
+            if e["status"] == "downloaded" and e.get("current")]
+    print(f"Descargadas según el progreso: {len(todo)}. Revisando y copiando a la entrega…", flush=True)
+    for i, e in enumerate(todo, 1):
         t = e["track"]
-        if e["status"] != "downloaded" or not e.get("current"):
-            continue
         c = e["current"]
         src = find_local(c["filename"], exact, folded)
         if not src:
@@ -99,6 +100,9 @@ def main():
         if not os.path.exists(dst):
             shutil.copy2(src, dst)
             copied += 1
+            print(f"  [{i}/{len(todo)}] + {name}", flush=True)
+        elif i % 50 == 0:
+            print(f"  [{i}/{len(todo)}] (ya estaban)", flush=True)
 
         fmt, kbps, dur, note = "", "", "", "ok"
         is_flac = dst.lower().endswith(".flac")

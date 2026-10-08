@@ -313,6 +313,19 @@ def load_state(tracks_path):
             state[t["key"]] = {"track": t, "status": "pending", "candidates": [], "tried": [], "current": None}
         else:
             state[t["key"]]["track"] = t  # por si se re-normalizó
+    # entradas de una limpieza anterior de la lista que ya no existen en tracks.json:
+    # se descartan, salvo las ya descargadas o en curso (esas archivos son reales)
+    current = {t["key"] for t in tracks}
+    stale = [k for k in state if k not in current]
+    dropped = 0
+    for k in stale:
+        if state[k]["status"] in ("downloaded", "queued"):
+            state[k]["stale"] = True
+        else:
+            del state[k]
+            dropped += 1
+    if dropped:
+        print(f"(se descartaron {dropped} entradas de una versión anterior de la lista)", file=sys.stderr)
     return state
 
 
