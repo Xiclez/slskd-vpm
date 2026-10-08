@@ -2,30 +2,33 @@
 # subir.sh — arma la entrega de una lista y la sube a Google Drive con el rclone del host.
 #
 # Uso:
-#   ./subir.sh <lista> <remoto:carpeta> [--link] [--bg] [--seguir [minutos]]
+#   ./subir.sh <lista> <remoto:carpeta> [--link] [--seguir [minutos]] [--fg]
 #
-#   --bg       corre en segundo plano (sobrevive a cerrar SSH). Log en ./logs/
+#   Por defecto corre en SEGUNDO PLANO (sobrevive a cerrar SSH) y te muestra
+#   el log en vivo; Ctrl+C solo deja de mirar, la subida sigue.
 #   --seguir   repite armar+subir cada N minutos (30 por defecto) hasta que la
 #              descarga termine, y luego hace una pasada final
 #   --link     al final imprime un enlace de Drive para compartir
+#   --fg       correr en primer plano (se corta si cierras la sesión)
 #
-# Ejemplo recomendado (deja todo subiendo solo hasta el final):
-#   ./subir.sh MI_LISTA gdrive:Clientes/Cliente1 --bg --seguir --link
-#   tail -f logs/subir_MI_LISTA.log
+# Ejemplo:
+#   ./subir.sh MI_LISTA gdrive:Clientes/Cliente1 --seguir --link
 #
 # Es incremental: solo sube archivos nuevos o cambiados y nunca borra nada en Drive.
 set -euo pipefail
-cd "$(dirname "$0")"
+SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+cd "$(dirname "$SCRIPT")"
 
-ayuda() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+ayuda() { sed -n '2,17p' "$SCRIPT" | sed 's/^# \{0,1\}//'; exit 1; }
 [[ $# -lt 2 ]] && ayuda
 
 LISTA=$(basename "$1" .txt); DESTINO="$2"; shift 2
-LINK=0; BG=0; SEGUIR=0; INTERVALO=30
+LINK=0; BG=1; SEGUIR=0; INTERVALO=30
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --link)   LINK=1 ;;
-    --bg)     BG=1 ;;
+    --bg)     BG=1 ;;   # (ya es el comportamiento por defecto)
+    --fg)     BG=0 ;;
     --seguir) SEGUIR=1
               if [[ "${2:-}" =~ ^[0-9]+$ ]]; then INTERVALO="$2"; shift; fi ;;
     *)        echo "Opción desconocida: $1"; ayuda ;;
@@ -34,7 +37,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p logs
-LOG="logs/subir_${LISTA}.log"
+LOG="$PWD/logs/subir_${LISTA}.log"
 STATE="trabajo/$LISTA/state.json"
 REMOTO="${DESTINO%%:*}"
 
@@ -48,14 +51,33 @@ fi
 
 # ── segundo plano: se relanza desligado de la sesión ──
 if [[ $BG -eq 1 && -z "${VPM_SUBIR_HIJO:-}" ]]; then
-  args=("$LISTA" "$DESTINO")
+  if flock -n "logs/.subir_${LISTA}.lock" true 2>/dev/null; then :; else
+    echo "Ya hay una subida en curso para '$LISTA'."
+    echo "  Ver progreso:  tail -f $LOG"; exit 1
+  fi
+  args=("$LISTA" "$DESTINO" --fg)
   [[ $LINK -eq 1 ]] && args+=(--link)
   [[ $SEGUIR -eq 1 ]] && args+=(--seguir "$INTERVALO")
-  VPM_SUBIR_HIJO=1 setsid nohup "$0" "${args[@]}" >> "$LOG" 2>&1 < /dev/null &
-  echo "Subiendo en segundo plano (PID $!). Puedes cerrar la sesión."
-  echo "  Ver progreso:  tail -f $LOG"
-  echo "  Detenerlo:     kill $!"
-  exit 0
+  touch "$LOG"
+  INICIO=$(( $(wc -l < "$LOG") + 1 ))   # el visor muestra solo esta subida
+  echo "──────── $(date '+%Y-%m-%d %H:%M:%S') nueva subida ────────" >> "$LOG"
+  # doble fork: el proceso queda colgado de init, no de esta sesión ni del visor
+  PIDF="logs/.subir_${LISTA}.pid"
+  ( VPM_SUBIR_HIJO=1 setsid nohup bash "$SCRIPT" "${args[@]}" >> "$LOG" 2>&1 < /dev/null &
+    echo $! > "$PIDF" )
+  PID=$(cat "$PIDF")
+  sleep 2
+  if ! kill -0 "$PID" 2>/dev/null; then
+    echo "✗ El proceso en segundo plano terminó enseguida. Últimas líneas del log:"
+    tail -n 15 "$LOG"; exit 1
+  fi
+  echo "✓ Subiendo en segundo plano (PID $PID). Puedes cerrar la sesión sin problema."
+  echo "  Ver progreso después:  tail -f $LOG"
+  echo "  Detenerlo:             kill $PID"
+  echo
+  echo "Mostrando el log en vivo (Ctrl+C solo deja de mirar, la subida sigue)…"
+  echo
+  exec tail -n +"$INICIO" -f "$LOG" --pid="$PID"
 fi
 
 # primer plano: además de la pantalla, todo queda en el log
